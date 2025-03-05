@@ -1,0 +1,27 @@
+/*
+ *  CUSTOM FUNCTION
+ *    TrimCarriageReturns ( text )
+ *
+ *  DESCRIPTION
+ *    Removes double, leading, and trailing carriage returns
+ *
+ *  PARAMS
+ *    text: A list or text field
+ *
+ *  RETURNS
+ *    Returns list or text field without trimmed carriage returns
+ *
+ *  DEPENDENCIES
+ *    —None—
+ *
+ *  CHANGELOG
+ *    2025-03-05: Kully Kekaula: Created
+*/
+
+Let ( [
+    cleanedText = Substitute ( text ; ["¶¶"; "¶"] ) ;
+    noLeading = If ( Left ( cleanedText ; 1 ) = "¶" ; Middle ( cleanedText ; 2 ; Length ( cleanedText ) - 1 ) ; cleanedText ) ;
+    noTrailing = If ( Right ( noLeading ; 1 ) = "¶" ; Left ( noLeading ; Length ( noLeading ) - 1 ) ; noLeading )
+] ;
+    If ( Position ( noTrailing ; "¶¶" ; 1 ; 1 ) > 0 ; TrimCarriageReturns ( noTrailing ) ; noTrailing )
+)
