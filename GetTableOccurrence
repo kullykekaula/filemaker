@@ -1,0 +1,24 @@
+/*
+ *  CUSTOM FUNCTION
+ *    GetTableOccurrence ( field )
+ *
+ *  DESCRIPTION
+ *    Returns the name of the table occurrence given a field reference or name of field as text
+ *
+ *  PARAMS
+ *    field: Field reference or name of field as text
+ *
+ *  RETURNS
+ *    Name of the table occurrence as a string
+ *
+ *  DEPENDENCIES
+ *    —None—
+ *
+ *  CHANGELOG
+ *    2025-02-19: Kully Kekaula: Created
+*/
+
+Let ( 
+    fieldName = GetFieldName ( field ) ; 
+    Left( fieldName ; Position( fieldName ; "::" ; 1 ; 1 ) - 1 )
+)
