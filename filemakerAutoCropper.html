@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>FM Auto-Crop White Borders</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body { margin:0; padding:0; background:#fff; }
+    #log { font:12px system-ui, -apple-system, Segoe UI, Roboto, Arial; padding:8px 10px; color:#333; }
+  </style>
+</head>
+<body>
+<div id="log">Ready…</div>
+<script>
+(function () {
+  const state = {
+    queue: [],         // { name, base64, mime, uuid }
+    results: [],       // { name, base64, cropped, bounds, mime, uuid }
+    options: {
+      whiteThreshold: 245,
+      satThreshold: 20,
+      sampleStep: 3,
+      margin: 0,
+      outputType: 'image/jpeg',
+      jpegQuality: 0.92
+    }
+  };
+
+  const log = (msg) => { const el = document.getElementById('log'); if (el) el.textContent = msg; console.log(msg); };
+
+  // ---------- Utils ----------
+  const UUID_RE = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$/;
+  const isUUID = (s) => typeof s === 'string' && UUID_RE.test(s);
+
+  function toDataURL(b64, mime = 'image/jpeg') {
+    if (/^data:image\//i.test(b64)) return b64;
+    return `data:${mime};base64,${b64}`;
+  }
+  function stripDataURL(dataURL) {
+    return dataURL.replace(/^data:[^;]+;base64,/, '');
+  }
+  function sniffMimeFromBase64(b64) {
+    try {
+      const bin = atob(b64.slice(0, 32));
+      const sig = [...bin].slice(0, 8).map(c => c.charCodeAt(0));
+      if (sig[0]===0x89 && sig[1]===0x50 && sig[2]===0x4E) return 'image/png';
+      if (sig[0]===0xFF && sig[1]===0xD8) return 'image/jpeg';
+    } catch(e) {}
+    return 'image/jpeg';
+  }
+
+  // ---------- Color helpers ----------
+  function rgbToHsv(r,g,b) {
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    const d = max - min;
+    const v = max;
+    const s = max === 0 ? 0 : (d / max) * 255;
+    let h = 0;
+    if (d !== 0) {
+      switch (max) {
+        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+        case g: h = (b - r) / d + 2; break;
+        case b: h = (r - g) / d + 4; break;
+      }
+      h *= 60;
+    }
+    return { h, s, v };
+  }
+  function isWhiteish(r,g,b,a, opts) {
+    if (a === 0) return true;
+    const { whiteThreshold, satThreshold } = opts;
+    const hsv = rgbToHsv(r,g,b);
+    return (hsv.v >= whiteThreshold) && (hsv.s <= satThreshold);
+  }
+
+  // ---------- Border scan & crop ----------
+  function measureCropBounds(img, opts) {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const step = opts.sampleStep;
+
+    const rowIsWhite = y => { for (let x=0;x<w;x+=step){ const i=(y*w+x)*4; if(!isWhiteish(data[i],data[i+1],data[i+2],data[i+3],opts)) return false; } return true; };
+    const colIsWhite = x => { for (let y=0;y<h;y+=step){ const i=(y*w+x)*4; if(!isWhiteish(data[i],data[i+1],data[i+2],data[i+3],opts)) return false; } return true; };
+
+    let top=0,bottom=h-1,left=0,right=w-1;
+    while (top<h && rowIsWhite(top)) top++;
+    while (bottom>=0 && rowIsWhite(bottom)) bottom--;
+    while (left<w && colIsWhite(left)) left++;
+    while (right>=0 && colIsWhite(right)) right--;
+
+    if (top>bottom || left>right) return { x:0,y:0,w,h,unchanged:true };
+
+    const m = Math.max(0, opts.margin|0);
+    const x = Math.max(0, left - m);
+    const y = Math.max(0, top  - m);
+    const cw = Math.min(w - x, (right - left + 1) + m*2);
+    const ch = Math.min(h - y, (bottom - top + 1) + m*2);
+    return { x, y, w:cw, h:ch, unchanged:(cw===w && ch===h) };
+  }
+
+  function cropDataURL(dataURL, opts) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const b = measureCropBounds(img, opts);
+        const out = document.createElement('canvas');
+        out.width = b.w; out.height = b.h;
+        const octx = out.getContext('2d');
+        octx.drawImage(img, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+        const mime = opts.outputType || 'image/jpeg';
+        const dataURL2 = out.toDataURL(mime, opts.jpegQuality);
+        resolve({ dataURL: dataURL2, bounds: b, mime });
+      };
+      img.onerror = (e) => reject(e);
+      img.src = dataURL;
+    });
+  }
+
+  // ---------- Public API for FileMaker ----------
+  // Load_Binary_File(name, base64, mimeHint, uuid?)
+  // Back-compat: if only 3 args and arg3 looks like UUID, treat it as uuid.
+  window.Load_Binary_File = function(name, base64, arg3, arg4) {
+    try {
+      let mimeHint = arg3, uuid = arg4;
+      if (arg4 === undefined && isUUID(arg3)) { uuid = arg3; mimeHint = undefined; }
+      const mime = mimeHint || sniffMimeFromBase64(base64);
+      state.queue.push({ name, base64, mime, uuid: uuid || null });
+      log(`Queued ${state.queue.length} image(s)…`);
+      return true;
+    } catch (e) {
+      console.error(e); return false;
+    }
+  };
+
+  window.crop_all = async function() {
+    if (!state.queue.length) { log('Nothing to crop.'); return; }
+    log(`Cropping ${state.queue.length} image(s)…`);
+    state.results = [];
+    for (let i = 0; i < state.queue.length; i++) {
+      const { name, base64, mime, uuid } = state.queue[i];
+      try {
+        const dataURL = toDataURL(base64, mime);
+        const { dataURL: croppedURL, bounds, mime: outMime } = await cropDataURL(dataURL, state.options);
+        const croppedB64 = stripDataURL(croppedURL);
+
+        const payload = { name, uuid, base64: croppedB64, cropped: !bounds.unchanged, bounds, mime: outMime };
+        state.results.push(payload);
+
+        if (window.FileMaker && FileMaker.PerformScript) {
+          FileMaker.PerformScript("Receive Cropped Image", JSON.stringify(payload));
+        }
+        log(`Cropped ${i+1}/${state.queue.length}: ${name}`);
+      } catch (e) {
+        console.error(`Failed to crop ${name}`, e);
+        if (window.FileMaker && FileMaker.PerformScript) {
+          FileMaker.PerformScript("Receive Cropped Image", JSON.stringify({ name, error: String(e), uuid }));
+        }
+      }
+    }
+    if (window.FileMaker && FileMaker.PerformScript) {
+      FileMaker.PerformScript("Cropped Batch Complete", JSON.stringify({ count: state.results.length }));
+    }
+    log(`Done. Cropped ${state.results.length} image(s).`);
+  };
+
+  window.Set_Crop_Options = function(json) {
+    try {
+      const opts = JSON.parse(json);
+      Object.assign(state.options, opts || {});
+      log(`Options updated: ${JSON.stringify(state.options)}`);
+      return true;
+    } catch (e) { console.error(e); return false; }
+  };
+
+  log("Ready to receive images…");
+})();
+</script>
+</body>
+</html>
